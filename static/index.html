@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Woning Info Zwolle</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <span class="logo-icon">🏠</span>
+    <span class="logo-text">Woning Info <strong>Zwolle</strong></span>
+  </div>
+  <div class="search-container">
+    <input
+      type="text"
+      id="search-input"
+      placeholder="Zoek een adres in Zwolle…"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <div id="suggestions" class="suggestions hidden"></div>
+  </div>
+</header>
+
+<main>
+  <div id="map-container">
+    <div id="map"></div>
+    <div id="map-controls">
+      <label class="toggle-label">
+        <input type="checkbox" id="kk-toggle" checked />
+        Kadastrale kaart
+      </label>
+    </div>
+  </div>
+
+  <div id="info-panel">
+    <div id="state-placeholder" class="panel-state">
+      <div class="placeholder-icon">🏠</div>
+      <p>Zoek een adres in Zwolle<br />om eigendoms- en kadastraal<br />informatie te bekijken.</p>
+    </div>
+
+    <div id="state-loading" class="panel-state hidden">
+      <div class="spinner"></div>
+      <p>Gegevens ophalen…</p>
+    </div>
+
+    <div id="state-error" class="panel-state error-state hidden"></div>
+
+    <div id="info-content" class="hidden"></div>
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
