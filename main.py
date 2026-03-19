@@ -300,3 +300,196 @@ async def get_huispedia(straat: str, huisnummer: str, woonplaats: str, postcode:
         result["bouwjaar_hp"] = jaar_match.group(1)
 
     return {"data": result if result else None, "url": url, "fout": None}
+
+
+MOBIEL_GQL = "https://graph.mobiel.nl/api"
+MOBIEL_GQL_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept":       "application/json",
+    "Origin":       "https://www.independer.nl",
+    "Referer":      "https://www.independer.nl/",
+    "User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+}
+INTERNET_QUERY = """
+query($postcode: String!, $number: Int!) {
+  postcode(postcode: $postcode, number: $number, numberAddon: "") {
+    fixedAvailability {
+      done
+      offers { providerSlug state speeds { down up } rawResponse }
+    }
+  }
+}
+"""
+
+def _ziggo_max_speed(tcp_lines: list) -> int | None:
+    service_types = []
+    for tcp in tcp_lines:
+        for svc in tcp.get("TcpServiceLines", []):
+            if svc.get("FunctionalOrderingPossible"):
+                service_types.append(svc.get("TcpPossibleServiceType", ""))
+    for svc in service_types:
+        if "2GIGA" in svc:
+            return 2000
+    for svc in service_types:
+        if "GIGA" in svc:
+            return 1000
+    return None
+
+
+@app.get("/api/internet")
+async def get_internet(postcode: str, huisnummer: str):
+    """Haal internetbeschikbaarheid op via de Independer/Mobiel.nl GraphQL API."""
+    zip_clean = postcode.replace(" ", "").upper()
+    nr_str    = re.sub(r"[^\d]", "", str(huisnummer))
+    if not nr_str:
+        return {"data": None, "fout": "Ongeldig huisnummer"}
+    nr = int(nr_str)
+
+    # Link naar providers.nl met adres ingevuld
+    url = (f"https://www.providers.nl/internet/vergelijken"
+           f"?zip={postcode.replace(' ', '').lower()}&nr={nr}&scroll=true&product_type=ipt")
+
+    import asyncio as _asyncio
+
+    variables = {"postcode": zip_clean, "number": nr}
+    offers = []
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        # Poll totdat alle offers klaar zijn (max 10 pogingen, 1s tussenpoos)
+        for attempt in range(10):
+            try:
+                r = await client.post(
+                    MOBIEL_GQL,
+                    json={"query": INTERNET_QUERY, "variables": variables},
+                    headers=MOBIEL_GQL_HEADERS,
+                )
+                r.raise_for_status()
+            except Exception as e:
+                return {"data": None, "url": url, "fout": str(e)}
+
+            gql = r.json()
+            if "errors" in gql:
+                return {"data": None, "url": url, "fout": "GraphQL fout"}
+
+            offers = (gql.get("data") or {}).get("postcode", {}).get("fixedAvailability", {}).get("offers", [])
+
+            if not any(o.get("state") == "performing" for o in offers):
+                break  # Alle offers zijn klaar
+
+            await _asyncio.sleep(1.0)
+
+    nets: dict[str, dict] = {
+        "glasvezel": {"available": False, "maxDown": None},
+        "kabel":     {"available": False, "maxDown": None},
+        "adsl":      {"available": False, "maxDown": None},
+    }
+
+    def _update(net: str, speed):
+        nets[net]["available"] = True
+        if speed and (nets[net]["maxDown"] is None or speed > nets[net]["maxDown"]):
+            nets[net]["maxDown"] = speed
+
+    for offer in offers:
+        if offer.get("state") != "succeeded":
+            continue
+        raw    = offer.get("rawResponse")
+        speeds = offer.get("speeds") or {}
+        down   = speeds.get("down")
+
+        if not isinstance(raw, (dict, list)):
+            continue
+
+        # Budget-internet / resellers: ConnectionCharacteristics
+        if isinstance(raw, dict) and "ConnectionCharacteristics" in raw:
+            for char in raw.get("ConnectionCharacteristics") or []:
+                lt  = (char.get("LineType") or "").lower()
+                spd = char.get("MaxDownSpeed") or down
+                if "fiber" in lt or "glas" in lt:
+                    _update("glasvezel", down or spd)
+                elif "coax" in lt or "cable" in lt:
+                    _update("kabel", down or spd)
+                elif "copper" in lt or "vdsl" in lt or "adsl" in lt:
+                    _update("adsl", down or spd)
+
+        # Ziggo: TcpLines (null = niet beschikbaar)
+        elif isinstance(raw, dict) and "TcpLines" in raw:
+            tcp_lines = raw.get("TcpLines")
+            if tcp_lines:  # null of lege lijst = geen kabel
+                spd = _ziggo_max_speed(tcp_lines)
+                _update("kabel", spd or down)
+
+        # KPN direct: available_on_address.technologies
+        elif isinstance(raw, dict) and "available_on_address" in raw:
+            techs = (raw.get("available_on_address") or {}).get("technologies") or []
+            for tech in techs:
+                name  = (tech.get("name") or "").upper()
+                spd   = tech.get("download") or 0
+                if spd <= 0:
+                    continue
+                if "FIBER" in name or "GLASVEZEL" in name:
+                    _update("glasvezel", down or spd)
+                elif "COAX" in name or "HFC" in name:
+                    _update("kabel", down or spd)
+                elif "COPPER" in name or "DSL" in name or "VDSL" in name or "ADSL" in name:
+                    _update("adsl", down or spd)
+
+        # Odido: fiber_offer / dsl_offer
+        elif isinstance(raw, dict) and ("fiber_offer" in raw or "dsl_offer" in raw):
+            if raw.get("fiber_offer"):
+                # Gebruik fiber_offer CoverageInfo als autoritatieve bron
+                fiber_info = (((raw.get("fiber_offer") or {})
+                               .get("Envelope", {})
+                               .get("Body", {})
+                               .get("CheckFiberCoverageResponse", {})
+                               .get("CheckFiberCoverageResult", {})
+                               .get("CoverageInfo", {})))
+                raw_bw = fiber_info.get("ExpectedMaximumAvailableBandwidth")
+                if raw_bw is not None:
+                    # Veld aanwezig: 0 = niet beschikbaar, >0 = wel beschikbaar
+                    try:
+                        bw = int(raw_bw or 0)
+                        if bw > 0:
+                            _update("glasvezel", round(bw / 1000))  # kbps → Mbps
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    # Veld afwezig: gebruik offer-snelheid als hint
+                    if down:
+                        _update("glasvezel", down)
+
+        # Youfone: PostcodeCheckCoverageResult
+        elif isinstance(raw, dict) and "PostcodeCheckCoverageResult" in raw:
+            for prod in (raw["PostcodeCheckCoverageResult"].get("DeliverableProducts") or []):
+                status   = (prod.get("AvailabilityStatus") or "").lower()
+                dsl_type = (prod.get("DslProductTypeName") or "").upper()
+                spd_kbps = prod.get("ExpectedDownKbps") or 0
+                spd_mbps = round(spd_kbps / 1000) if spd_kbps > 0 else None
+                if "orderable" not in status and "available" not in status:
+                    continue
+                if "FIBER" in dsl_type or "GLASVEZEL" in dsl_type:
+                    _update("glasvezel", down or spd_mbps)
+                elif dsl_type and dsl_type not in ("", "NOACCESS"):
+                    _update("adsl", down or spd_mbps)
+
+        # Delta/Caiway: lijst van brand-objecten met connections
+        elif isinstance(raw, list):
+            for brand in raw:
+                if not isinstance(brand, dict):
+                    continue
+                for conn in brand.get("connections") or []:
+                    ct     = (conn.get("connectionType") or "").lower()
+                    status = (conn.get("connectionStatus") or "").lower()
+                    if "niet beschikbaar" in status or status.strip() in ("", "niet"):
+                        continue
+                    if "glasvezel" in ct or "fiber" in ct:
+                        _update("glasvezel", down)
+                    elif "coax" in ct:
+                        _update("kabel", down)
+
+    result = {}
+    for net, info in nets.items():
+        result[net] = info["available"]
+        if info["maxDown"] is not None:
+            result[f"{net}_mbps"] = info["maxDown"]
+
+    return {"data": result, "url": url, "fout": None}

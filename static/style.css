@@ -321,6 +321,35 @@ main {
   border-top: 1px solid #f3f4f6;
 }
 
+/* ── Internet beschikbaarheid ── */
+.internet-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.internet-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: .875rem;
+}
+
+.inet-yes  { color: #15803d; font-weight: 700; }
+.inet-no   { color: #b91c1c; font-weight: 700; }
+.inet-label { color: #374151; }
+.inet-speed { font-weight: 700; color: #1e40af; }
+
+.hp-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: .8rem;
+  color: #3a5fc8;
+  text-decoration: none;
+}
+.hp-link:hover { text-decoration: underline; }
+
 /* ── No-data ── */
 .no-data {
   color: #9ca3af;

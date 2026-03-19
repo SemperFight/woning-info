@@ -108,7 +108,7 @@ async function selectAddress(item) {
     const percelParams = new URLSearchParams({ rd_x: addr.rd_x, rd_y: addr.rd_y });
     if (gpValue) percelParams.set('gekoppeld_perceel', gpValue);
 
-    const [percelData, wozData, hpData, monData] = await Promise.all([
+    const [percelData, wozData, hpData, monData, internetData] = await Promise.all([
       fetch(`/api/perceel?${percelParams}`).then((r) => r.json()).catch(() => ({ perceel: null })),
       fetch(`/api/woz?${new URLSearchParams({
           ...(addr.nummeraanduiding_id && { nummeraanduiding_id: addr.nummeraanduiding_id }),
@@ -127,6 +127,11 @@ async function selectAddress(item) {
             .then((r) => r.json())
             .catch(() => ({ monumenten: [] }))
         : Promise.resolve({ monumenten: [] }),
+      addr.postcode && addr.huisnummer
+        ? fetch(`/api/internet?${new URLSearchParams({ postcode: addr.postcode, huisnummer: addr.huisnummer })}`)
+            .then((r) => r.json())
+            .catch(() => ({ data: null, url: null, fout: 'netwerkfout' }))
+        : Promise.resolve({ data: null, url: null, fout: null }),
     ]);
 
     // Map: parcel polygon
@@ -142,7 +147,7 @@ async function selectAddress(item) {
       }).addTo(map);
     }
 
-    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? []);
+    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? [], internetData);
   } catch (err) {
     showError('Er is een fout opgetreden. Probeer het opnieuw.');
     console.error(err);
@@ -165,7 +170,7 @@ function showError(msg) {
 }
 
 // ── Info panel renderer ─────────────────────────────────────────────────────
-function renderInfoPanel(addr, perceel, woz, hp, monumenten) {
+function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet) {
   const content = document.getElementById('info-content');
   content.innerHTML = '';
 
@@ -219,6 +224,9 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten) {
 
   // Monumentale status
   content.appendChild(monumentCard(monumenten));
+
+  // Internetbeschikbaarheid
+  content.appendChild(internetCard(internet));
 
   // Huispedia
   content.appendChild(huispediaCard(hp));
@@ -464,6 +472,67 @@ function formatHpValue(val) {
   const num = parseFloat(String(val).replace(/[^\d]/g, ''));
   if (!isNaN(num) && num > 10000) return formatEuro(num);
   return String(val);
+}
+
+// ── Internet card ─────────────────────────────────────────────────────────────
+function internetCard(internet) {
+  const el = document.createElement('div');
+  el.className = 'info-card';
+
+  const h2 = document.createElement('h2');
+  h2.textContent = '🌐 Internetbeschikbaarheid';
+  el.appendChild(h2);
+
+  const d = internet?.data;
+
+  if (!d) {
+    if (internet?.url) {
+      const a = document.createElement('a');
+      a.href = internet.url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.className = 'hp-link';
+      a.textContent = '↗ Bekijk op Providers.nl';
+      el.appendChild(a);
+    }
+    return el;
+  }
+
+  const types = [
+    { key: 'glasvezel', label: 'Glasvezel', speedKey: 'glasvezel_mbps' },
+    { key: 'kabel',     label: 'Kabel',     speedKey: 'kabel_mbps'     },
+    { key: 'adsl',      label: 'ADSL/VDSL', speedKey: 'adsl_mbps'      },
+  ];
+
+  const rows = document.createElement('div');
+  rows.className = 'internet-rows';
+
+  types.forEach(({ key, label, speedKey }) => {
+    if (d[key] === undefined) return;
+    const row = document.createElement('div');
+    row.className = 'internet-row';
+
+    const icon = d[key] ? '✓' : '✗';
+    const iconClass = d[key] ? 'inet-yes' : 'inet-no';
+    const speed = d[speedKey] ? ` <span class="inet-speed">${d[speedKey]} Mb/s</span>` : '';
+
+    row.innerHTML = `<span class="${iconClass}">${icon}</span> <span class="inet-label">${label}</span>${speed}`;
+    rows.appendChild(row);
+  });
+
+  el.appendChild(rows);
+
+  if (internet?.url) {
+    const a = document.createElement('a');
+    a.href = internet.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.className = 'hp-link';
+    a.textContent = '↗ Bekijk op Providers.nl';
+    el.appendChild(a);
+  }
+
+  return el;
 }
 
 function linksCard(addr, hp) {
