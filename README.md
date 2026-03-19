@@ -10,6 +10,7 @@ Lokale webapplicatie die eigendoms- en kadastrale informatie ophaalt voor adress
 - Kadastrale gegevens (sectie, perceelnummer, grootte)
 - WOZ-waarden (meest recente zichtbaar, oudere waarden uitklapbaar)
 - Monumentale status (Rijks- en gemeentelijke monumenten)
+- Internetbeschikbaarheid (glasvezel, kabel, ADSL/VDSL) met maximale downloadsnelheid
 - Link naar Huispedia woningpagina
 - Externe links naar relevante bronnen
 
@@ -23,10 +24,13 @@ Zorg dat Python 3.10 of hoger is geïnstalleerd. Controleer via:
 python --version
 ```
 
-### 2. Navigeer naar de projectmap
+### 2. Kloon of download de repository
 ```bash
-cd "pad/naar/woning-info"
+git clone https://github.com/JOUWGEBRUIKERSNAAM/woning-info.git
+cd woning-info
 ```
+
+Of download de ZIP via GitHub en pak deze uit.
 
 ### 3. Maak een virtuele omgeving aan
 ```bash
@@ -95,4 +99,5 @@ Druk in de terminal op **Ctrl+C**. Je kunt daarna de terminal gewoon sluiten.
 | [PDOK Kadastrale Kaart WFS](https://service.pdok.nl) | Perceelgegevens en geometrie |
 | [Kadaster WOZ Waardeloket](https://www.woz-waardeloket.nl) | WOZ-waarden |
 | [Zwolle ArcGIS Erfgoed](https://gisservices.zwolle.nl) | Monumentale status |
+| [Independer / Mobiel.nl GraphQL](https://graph.mobiel.nl) | Internetbeschikbaarheid per adres |
 | [Huispedia](https://www.huispedia.nl) | Woningpagina link |
