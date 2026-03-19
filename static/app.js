@@ -103,10 +103,13 @@ async function selectAddress(item) {
       ? `straat=${encodeURIComponent(addr.straat)}&huisnummer=${encodeURIComponent(addr.huisnummer)}&woonplaats=${encodeURIComponent(addr.woonplaats)}&postcode=${encodeURIComponent(addr.postcode)}`
       : null;
 
-    const [percelData, wozData, hpData] = await Promise.all([
-      fetch(`/api/perceel?rd_x=${addr.rd_x}&rd_y=${addr.rd_y}`)
-        .then((r) => r.json())
-        .catch(() => ({ perceel: null })),
+    const gpRaw = addr.gekoppeld_perceel;
+    const gpValue = Array.isArray(gpRaw) ? gpRaw[0] : gpRaw;
+    const percelParams = new URLSearchParams({ rd_x: addr.rd_x, rd_y: addr.rd_y });
+    if (gpValue) percelParams.set('gekoppeld_perceel', gpValue);
+
+    const [percelData, wozData, hpData, monData] = await Promise.all([
+      fetch(`/api/perceel?${percelParams}`).then((r) => r.json()).catch(() => ({ perceel: null })),
       fetch(`/api/woz?${new URLSearchParams({
           ...(addr.nummeraanduiding_id && { nummeraanduiding_id: addr.nummeraanduiding_id }),
           ...(addr.postcode            && { postcode:            addr.postcode }),
@@ -119,6 +122,11 @@ async function selectAddress(item) {
             .then((r) => r.json())
             .catch(() => ({ data: null, url: null, fout: 'netwerkfout' }))
         : Promise.resolve({ data: null, url: null, fout: null }),
+      addr.rd_x && addr.rd_y
+        ? fetch(`/api/monument?rd_x=${addr.rd_x}&rd_y=${addr.rd_y}`)
+            .then((r) => r.json())
+            .catch(() => ({ monumenten: [] }))
+        : Promise.resolve({ monumenten: [] }),
     ]);
 
     // Map: parcel polygon
@@ -134,7 +142,7 @@ async function selectAddress(item) {
       }).addTo(map);
     }
 
-    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData);
+    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? []);
   } catch (err) {
     showError('Er is een fout opgetreden. Probeer het opnieuw.');
     console.error(err);
@@ -157,7 +165,7 @@ function showError(msg) {
 }
 
 // ── Info panel renderer ─────────────────────────────────────────────────────
-function renderInfoPanel(addr, perceel, woz, hp) {
+function renderInfoPanel(addr, perceel, woz, hp, monumenten) {
   const content = document.getElementById('info-content');
   content.innerHTML = '';
 
@@ -208,6 +216,9 @@ function renderInfoPanel(addr, perceel, woz, hp) {
 
   // WOZ waarden
   content.appendChild(wozCard(woz));
+
+  // Monumentale status
+  content.appendChild(monumentCard(monumenten));
 
   // Huispedia
   content.appendChild(huispediaCard(hp));
@@ -324,6 +335,51 @@ function wozCard(woz) {
 }
 
 // ── Links card ───────────────────────────────────────────────────────────────
+// ── Monument card ────────────────────────────────────────────────────────────
+function monumentCard(monumenten) {
+  const el = document.createElement('div');
+  el.className = 'info-card';
+
+  const h2 = document.createElement('h2');
+  h2.textContent = '🏛️ Monumentale status';
+  el.appendChild(h2);
+
+  if (!monumenten.length) {
+    const row = document.createElement('div');
+    row.className = 'monument-none';
+    row.innerHTML = '<span class="badge badge--none">Geen monument</span> Geen monumentale status gevonden.';
+    el.appendChild(row);
+    return el;
+  }
+
+  monumenten.forEach((m) => {
+    const block = document.createElement('div');
+    block.className = 'monument-item';
+
+    const badgeClass = m.soort === 'Rijksmonument' ? 'badge--rijk' : 'badge--gemeente';
+    block.innerHTML = `<span class="badge ${badgeClass}">${m.soort}</span>`;
+
+    const table = document.createElement('table');
+    table.className = 'data-table';
+    [
+      ['Code',          m.code],
+      ['Omschrijving',  m.omschrijving],
+      ['Bouwjaar',      m.bouwjaar],
+      ['Bouwstijl',     m.bouwstijl],
+      ['Datum besluit', m.datum_besluit],
+    ].forEach(([label, value]) => {
+      if (!value) return;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="lbl">${label}</td><td class="val">${value}</td>`;
+      table.appendChild(tr);
+    });
+    block.appendChild(table);
+    el.appendChild(block);
+  });
+
+  return el;
+}
+
 // ── Huispedia card ───────────────────────────────────────────────────────────
 function huispediaCard(hp) {
   const el = document.createElement('div');
@@ -369,11 +425,6 @@ function huispediaCard(hp) {
     const p = document.createElement('p');
     p.className = 'no-data';
     p.textContent = `Niet beschikbaar (${hp.fout}).`;
-    el.appendChild(p);
-  } else {
-    const p = document.createElement('p');
-    p.className = 'no-data';
-    p.textContent = 'Pagina gevonden maar geen gestructureerde data uitgelezen.';
     el.appendChild(p);
   }
 
@@ -424,10 +475,11 @@ function linksCard(addr, hp) {
   el.appendChild(h2);
 
   const links = [
-    { label: 'WOZ Waardeloket',       url: 'https://www.woz-waardeloket.nl/' },
-    { label: 'Kadaster Koopprijzen',  url: 'https://www.kadaster.nl/zakelijk/producten/eigendom/koopprijzen-woningen' },
-    { label: 'Kadaster BRK Viewer',   url: 'https://brk.basisregistraties.overheid.nl/brk2/viewer/' },
-    { label: 'PDOK Viewer',           url: 'https://www.pdok.nl/viewer/' },
+    { label: 'WOZ Waardeloket',        url: 'https://www.woz-waardeloket.nl/' },
+    { label: 'Kadaster kadastrale kaart', url: 'https://www.kadaster.nl/zakelijk/producten/eigendom/kadastrale-kaart' },
+    { label: 'Monumentenregister',     url: 'https://monumentenregister.cultureelerfgoed.nl/' },
+    { label: 'Gemeentelijke monumenten Zwolle', url: 'https://zwolle.maps.arcgis.com/apps/instant/sidebar/index.html?appid=7526b0fc2cc740ad956230b55f7865c7&webmap=859c786479f24fc38d44699a7ab7409e' },
+    { label: 'PDOK Viewer',            url: 'https://app.pdok.nl/viewer/' },
   ];
 
   if (hp?.url) {
@@ -437,7 +489,7 @@ function linksCard(addr, hp) {
   if (addr.verblijfsobject_id) {
     links.unshift({
       label: 'BAG Viewer (object)',
-      url:   `https://bagviewer.geolocus.nl/lvbag/api/api/verblijfsobject/${addr.verblijfsobject_id}`,
+      url:   `https://bagviewer.kadaster.nl/lvbag/bag-viewer/index.html#?searchQuery=${addr.verblijfsobject_id}`,
     });
   }
 

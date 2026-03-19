@@ -291,12 +291,34 @@ main {
 /* ── Badge ── */
 .badge {
   display: inline-block;
-  background: #eef2ff;
-  color: #3a5fc8;
   font-size: .72rem;
-  font-weight: 600;
-  padding: 2px 7px;
+  font-weight: 700;
+  padding: 2px 8px;
   border-radius: 4px;
+}
+
+.badge--none     { background: #f3f4f6; color: #6b7280; }
+.badge--rijk     { background: #fef3c7; color: #92400e; }
+.badge--gemeente { background: #dbeafe; color: #1e40af; }
+
+.monument-none {
+  font-size: .875rem;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.monument-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.monument-item + .monument-item {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f3f4f6;
 }
 
 /* ── No-data ── */

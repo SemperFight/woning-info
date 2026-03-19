@@ -77,6 +77,7 @@ async def lookup(id: str = Query(...)):
         "bouwjaar":            doc.get("bouwjaar"),
         "rd_x": rd_x,
         "rd_y": rd_y,
+        "gekoppeld_perceel":   doc.get("gekoppeld_perceel"),
         "oppervlakte":         doc.get("oppervlakte"),
         "gebruiksdoel":        doc.get("gebruiksdoel"),
         "lat": lat,
@@ -85,8 +86,12 @@ async def lookup(id: str = Query(...)):
 
 
 @app.get("/api/perceel")
-async def get_perceel(rd_x: float, rd_y: float):
-    d = 15  # meter in RD New
+async def get_perceel(gekoppeld_perceel: str = Query(None), rd_x: float = Query(None), rd_y: float = Query(None)):
+    if not rd_x or not rd_y:
+        return {"perceel": None}
+
+    # Haal percelen op via bbox (CQL attribuutfilter wordt niet ondersteund door deze WFS)
+    d = 30
     params = {
         "service":      "WFS",
         "version":      "2.0.0",
@@ -94,29 +99,51 @@ async def get_perceel(rd_x: float, rd_y: float):
         "typeNames":    "kadastralekaart:Perceel",
         "outputFormat": "application/json",
         "bbox":         f"{rd_x-d},{rd_y-d},{rd_x+d},{rd_y+d},EPSG:28992",
-        "count":        "1",
+        "count":        "20",
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             r = await client.get(PDOK_KK_WFS, params=params)
             r.raise_for_status()
-            data = r.json()
+            features = r.json().get("features", [])
         except Exception:
             return {"perceel": None}
 
-    features = data.get("features", [])
     if not features:
         return {"perceel": None}
 
-    f = features[0]
-    p = f.get("properties", {})
+    # Kies het juiste perceel op basis van gekoppeld_perceel (bijv. 'ZLE00-B-5538')
+    target_sectie = None
+    target_nummer = None
+    if gekoppeld_perceel:
+        parts = gekoppeld_perceel.split("-")
+        if len(parts) >= 3:
+            target_sectie = parts[-2]
+            try:
+                target_nummer = int(parts[-1])
+            except ValueError:
+                pass
+
+    best = None
+    if target_sectie and target_nummer:
+        for f in features:
+            p = f.get("properties", {})
+            if p.get("sectie") == target_sectie and p.get("perceelnummer") == target_nummer:
+                best = f
+                break
+
+    # Fallback: neem het kleinste perceel (meest kans op het juiste woonperceel)
+    if not best:
+        best = min(features, key=lambda f: f.get("properties", {}).get("kadastraleGrootteWaarde") or 9999999)
+
+    p = best.get("properties", {})
     return {
         "perceel": {
             "kadastralegemeente": p.get("kadastraleGemeenteWaarde"),
             "sectie":             p.get("sectie"),
             "perceelnummer":      p.get("perceelnummer"),
             "oppervlakte_m2":     p.get("kadastraleGrootteWaarde"),
-            "geometry":           f.get("geometry"),
+            "geometry":           best.get("geometry"),
         }
     }
 
@@ -138,6 +165,43 @@ async def get_woz(nummeraanduiding_id: str = Query(None)):
             pass
 
     return {"woz": None, "bron": None}
+
+
+ERFGOED_URL = "https://gisservices.zwolle.nl/arcgis/rest/services/Erfgoed/MapServer"
+
+@app.get("/api/monument")
+async def get_monument(rd_x: float, rd_y: float):
+    query_params = {
+        "f":            "json",
+        "geometry":     f"{rd_x},{rd_y}",
+        "geometryType": "esriGeometryPoint",
+        "inSR":         "28992",
+        "spatialRel":   "esriSpatialRelIntersects",
+        "outFields":    "MONUMENTCODE,KORTE_OMSCHRIJVING,BOUWJAAR,BOUWSTIJL,DATUM_BESLUIT",
+        "returnGeometry": "false",
+    }
+    monumenten = []
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for layer_id, soort in [(4, "Rijksmonument"), (5, "Gemeentelijk monument")]:
+            try:
+                r = await client.get(f"{ERFGOED_URL}/{layer_id}/query", params=query_params)
+                r.raise_for_status()
+                for feat in r.json().get("features", []):
+                    a = feat.get("attributes", {})
+                    omschrijving = a.get("KORTE_OMSCHRIJVING")
+                    if omschrijving in (None, "<Null>", ""):
+                        omschrijving = None
+                    monumenten.append({
+                        "soort":         soort,
+                        "code":          a.get("MONUMENTCODE"),
+                        "omschrijving":  omschrijving,
+                        "bouwjaar":      a.get("BOUWJAAR"),
+                        "bouwstijl":     a.get("BOUWSTIJL"),
+                        "datum_besluit": a.get("DATUM_BESLUIT"),
+                    })
+            except Exception:
+                pass
+    return {"monumenten": monumenten}
 
 
 def _slug(text: str) -> str:
@@ -162,8 +226,15 @@ async def get_huispedia(straat: str, huisnummer: str, woonplaats: str, postcode:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
         ),
-        "Accept-Language": "nl-NL,nl;q=0.9",
-        "Accept": "text/html,application/xhtml+xml",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
     }
 
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
@@ -171,6 +242,10 @@ async def get_huispedia(straat: str, huisnummer: str, woonplaats: str, postcode:
             r = await client.get(url, headers=headers)
         except Exception as e:
             return {"data": None, "url": url, "fout": str(e)}
+
+    # 403 = Huispedia blokkeert scraping; URL is wel geldig, toon alleen de link
+    if r.status_code == 403:
+        return {"data": None, "url": url, "fout": None}
 
     if r.status_code != 200:
         return {"data": None, "url": url, "fout": f"HTTP {r.status_code}"}
