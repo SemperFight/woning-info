@@ -25,8 +25,17 @@ document.getElementById('kk-toggle').addEventListener('change', (e) => {
   else map.removeLayer(kkLayer);
 });
 
-let markerLayer  = null;
-let parcelLayer  = null;
+let markerLayer    = null;
+let parcelLayer    = null;
+let laadpaalMarker = null;
+
+const laadpaalIcon = L.divIcon({
+  className: '',
+  html: '<div class="lp-icon">⚡</div>',
+  iconSize:   [28, 28],
+  iconAnchor: [14, 14],
+  popupAnchor:[0, -16],
+});
 
 // ── Search / autocomplete ───────────────────────────────────────────────────
 const searchInput   = document.getElementById('search-input');
@@ -76,7 +85,37 @@ function hideSuggestions() {
   suggestionsEl.innerHTML = '';
 }
 
-// ── Address selection ───────────────────────────────────────────────────────
+// ── Recent addresses ────────────────────────────────────────────────────────
+const RECENT_KEY = 'woning_recent';
+
+function saveRecent(item) {
+  const list = getRecent().filter((r) => r.id !== item.id);
+  list.unshift({ id: item.id, label: item.label });
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 3)));
+  renderRecent();
+}
+
+function getRecent() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
+}
+
+function renderRecent() {
+  const list = getRecent();
+  const container = document.getElementById('recent-list');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!list.length) return;
+  document.getElementById('recent-header').classList.remove('hidden');
+  list.forEach((item) => {
+    const btn = document.createElement('button');
+    btn.className = 'recent-item';
+    btn.textContent = item.label;
+    btn.addEventListener('click', () => selectAddress(item));
+    container.appendChild(btn);
+  });
+}
+
+// ── Address selection ────────────────────────────────────────────────────────
 async function selectAddress(item) {
   searchInput.value = item.label;
   hideSuggestions();
@@ -89,6 +128,8 @@ async function selectAddress(item) {
       showError('Geen coördinaten gevonden voor dit adres.');
       return;
     }
+
+    saveRecent(item);
 
     // Map: marker
     if (markerLayer) map.removeLayer(markerLayer);
@@ -108,7 +149,7 @@ async function selectAddress(item) {
     const percelParams = new URLSearchParams({ rd_x: addr.rd_x, rd_y: addr.rd_y });
     if (gpValue) percelParams.set('gekoppeld_perceel', gpValue);
 
-    const [percelData, wozData, hpData, monData, internetData] = await Promise.all([
+    const [percelData, wozData, hpData, monData, internetData, laadpalenData] = await Promise.all([
       fetch(`/api/perceel?${percelParams}`).then((r) => r.json()).catch(() => ({ perceel: null })),
       fetch(`/api/woz?${new URLSearchParams({
           ...(addr.nummeraanduiding_id && { nummeraanduiding_id: addr.nummeraanduiding_id }),
@@ -132,7 +173,24 @@ async function selectAddress(item) {
             .then((r) => r.json())
             .catch(() => ({ data: null, url: null, fout: 'netwerkfout' }))
         : Promise.resolve({ data: null, url: null, fout: null }),
+      addr.lat && addr.lng
+        ? fetch(`/api/laadpalen?lat=${addr.lat}&lng=${addr.lng}`)
+            .then((r) => r.json())
+            .catch(() => ({ laadpalen: [], dichtsbijzijnde_m: null }))
+        : Promise.resolve({ laadpalen: [], dichtsbijzijnde_m: null }),
     ]);
+
+    // Map: laadpaal marker (dichtstbijzijnde)
+    if (laadpaalMarker) { map.removeLayer(laadpaalMarker); laadpaalMarker = null; }
+    const nearest = laadpalenData?.laadpalen?.[0];
+    if (nearest?.lat && nearest?.lng) {
+      const popupLines = (nearest.connectoren || [])
+        .map((c) => `${c.type}${c.vermogen_kw ? ` ${c.vermogen_kw} kW` : ''} — ${c.beschikbaar}/${c.totaal} vrij`)
+        .join('<br>');
+      laadpaalMarker = L.marker([nearest.lat, nearest.lng], { icon: laadpaalIcon })
+        .addTo(map)
+        .bindPopup(`<strong>${nearest.straat ?? 'Laadpaal'}</strong><br>${nearest.eigenaar ?? ''}<br>${popupLines}`);
+    }
 
     // Map: parcel polygon
     if (parcelLayer) map.removeLayer(parcelLayer);
@@ -147,7 +205,7 @@ async function selectAddress(item) {
       }).addTo(map);
     }
 
-    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? [], internetData);
+    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? [], internetData, laadpalenData);
   } catch (err) {
     showError('Er is een fout opgetreden. Probeer het opnieuw.');
     console.error(err);
@@ -170,7 +228,7 @@ function showError(msg) {
 }
 
 // ── Info panel renderer ─────────────────────────────────────────────────────
-function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet) {
+function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen) {
   const content = document.getElementById('info-content');
   content.innerHTML = '';
 
@@ -228,6 +286,9 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet) {
   // Internetbeschikbaarheid
   content.appendChild(internetCard(internet));
 
+  // Laadpalen
+  content.appendChild(laadpalenCard(laadpalen));
+
   // Huispedia
   content.appendChild(huispediaCard(hp));
 
@@ -240,13 +301,28 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet) {
 }
 
 // ── Card builder ────────────────────────────────────────────────────────────
-function card(title, rows) {
-  const el  = document.createElement('div');
+function makeCardShell(title) {
+  const el = document.createElement('div');
   el.className = 'info-card';
 
-  const h2  = document.createElement('h2');
-  h2.textContent = title;
+  const h2 = document.createElement('h2');
+  const toggle = document.createElement('span');
+  toggle.className = 'card-toggle';
+  toggle.textContent = '▾';
+  h2.appendChild(toggle);
+  h2.appendChild(document.createTextNode(' ' + title));
+  h2.addEventListener('click', () => el.classList.toggle('collapsed'));
   el.appendChild(h2);
+
+  const body = document.createElement('div');
+  body.className = 'card-body';
+  el.appendChild(body);
+
+  return { el, body };
+}
+
+function card(title, rows) {
+  const { el, body } = makeCardShell(title);
 
   const table = document.createElement('table');
   table.className = 'data-table';
@@ -258,24 +334,19 @@ function card(title, rows) {
     table.appendChild(tr);
   });
 
-  el.appendChild(table);
+  body.appendChild(table);
   return el;
 }
 
 // ── WOZ card ────────────────────────────────────────────────────────────────
 function wozCard(woz) {
-  const el = document.createElement('div');
-  el.className = 'info-card';
-
-  const h2 = document.createElement('h2');
-  h2.textContent = '💰 WOZ-waarden';
-  el.appendChild(h2);
+  const { el, body } = makeCardShell('💰 WOZ-waarden');
 
   if (!woz) {
     const p = document.createElement('p');
     p.className   = 'no-data';
     p.textContent = 'WOZ-waarden niet beschikbaar via open data.';
-    el.appendChild(p);
+    body.appendChild(p);
     return el;
   }
 
@@ -289,7 +360,7 @@ function wozCard(woz) {
     const p = document.createElement('p');
     p.className   = 'no-data';
     p.textContent = 'Geen WOZ-waarden in de databron gevonden.';
-    el.appendChild(p);
+    body.appendChild(p);
     return el;
   }
 
@@ -319,7 +390,7 @@ function wozCard(woz) {
   const tbody = document.createElement('tbody');
   tbody.appendChild(makeRow(latest));
   table.appendChild(tbody);
-  el.appendChild(table);
+  body.appendChild(table);
 
   // Oudere waarden in uitklapbaar blok
   if (rest.length) {
@@ -336,7 +407,7 @@ function wozCard(woz) {
     rest.forEach((w) => oldTbody.appendChild(makeRow(w)));
     oldTable.appendChild(oldTbody);
     details.appendChild(oldTable);
-    el.appendChild(details);
+    body.appendChild(details);
   }
 
   return el;
@@ -345,18 +416,13 @@ function wozCard(woz) {
 // ── Links card ───────────────────────────────────────────────────────────────
 // ── Monument card ────────────────────────────────────────────────────────────
 function monumentCard(monumenten) {
-  const el = document.createElement('div');
-  el.className = 'info-card';
-
-  const h2 = document.createElement('h2');
-  h2.textContent = '🏛️ Monumentale status';
-  el.appendChild(h2);
+  const { el, body } = makeCardShell('🏛️ Monumentale status');
 
   if (!monumenten.length) {
     const row = document.createElement('div');
     row.className = 'monument-none';
     row.innerHTML = '<span class="badge badge--none">Geen monument</span> Geen monumentale status gevonden.';
-    el.appendChild(row);
+    body.appendChild(row);
     return el;
   }
 
@@ -382,7 +448,7 @@ function monumentCard(monumenten) {
       table.appendChild(tr);
     });
     block.appendChild(table);
-    el.appendChild(block);
+    body.appendChild(block);
   });
 
   return el;
@@ -390,18 +456,13 @@ function monumentCard(monumenten) {
 
 // ── Huispedia card ───────────────────────────────────────────────────────────
 function huispediaCard(hp) {
-  const el = document.createElement('div');
-  el.className = 'info-card';
-
-  const h2 = document.createElement('h2');
-  h2.textContent = '🏡 Huispedia';
-  el.appendChild(h2);
+  const { el, body } = makeCardShell('🏡 Huispedia');
 
   if (!hp || (!hp.data && !hp.url)) {
     const p = document.createElement('p');
     p.className = 'no-data';
     p.textContent = 'Geen Huispedia-gegevens beschikbaar.';
-    el.appendChild(p);
+    body.appendChild(p);
     return el;
   }
 
@@ -428,12 +489,12 @@ function huispediaCard(hp) {
       tr.innerHTML = `<td class="lbl">${label}</td><td class="val">${value}</td>`;
       table.appendChild(tr);
     });
-    el.appendChild(table);
+    body.appendChild(table);
   } else if (hp.fout) {
     const p = document.createElement('p');
     p.className = 'no-data';
     p.textContent = `Niet beschikbaar (${hp.fout}).`;
-    el.appendChild(p);
+    body.appendChild(p);
   }
 
   if (hp.url) {
@@ -443,7 +504,7 @@ function huispediaCard(hp) {
     a.rel = 'noopener noreferrer';
     a.className = 'hp-link';
     a.textContent = '↗ Bekijk op Huispedia';
-    el.appendChild(a);
+    body.appendChild(a);
   }
 
   return el;
@@ -476,12 +537,7 @@ function formatHpValue(val) {
 
 // ── Internet card ─────────────────────────────────────────────────────────────
 function internetCard(internet) {
-  const el = document.createElement('div');
-  el.className = 'info-card';
-
-  const h2 = document.createElement('h2');
-  h2.textContent = '🌐 Internetbeschikbaarheid';
-  el.appendChild(h2);
+  const { el, body } = makeCardShell('🌐 Internetbeschikbaarheid');
 
   const d = internet?.data;
 
@@ -493,7 +549,7 @@ function internetCard(internet) {
       a.rel = 'noopener noreferrer';
       a.className = 'hp-link';
       a.textContent = '↗ Bekijk op Providers.nl';
-      el.appendChild(a);
+      body.appendChild(a);
     }
     return el;
   }
@@ -520,7 +576,7 @@ function internetCard(internet) {
     rows.appendChild(row);
   });
 
-  el.appendChild(rows);
+  body.appendChild(rows);
 
   if (internet?.url) {
     const a = document.createElement('a');
@@ -529,19 +585,83 @@ function internetCard(internet) {
     a.rel = 'noopener noreferrer';
     a.className = 'hp-link';
     a.textContent = '↗ Bekijk op Providers.nl';
-    el.appendChild(a);
+    body.appendChild(a);
+  }
+
+  return el;
+}
+
+// ── Laadpalen card ───────────────────────────────────────────────────────────
+function laadpalenCard(data) {
+  const { el, body } = makeCardShell('⚡ Laadpalen in de buurt (500 m)');
+
+  if (!data || !data.laadpalen) {
+    const p = document.createElement('p');
+    p.className = 'no-data';
+    p.textContent = 'Geen laadpalendata beschikbaar.';
+    body.appendChild(p);
+    return el;
+  }
+
+  const { laadpalen } = data;
+
+  if (!laadpalen.length) {
+    const p = document.createElement('p');
+    p.className = 'no-data';
+    p.textContent = 'Geen laadpalen gevonden binnen 500 m.';
+    body.appendChild(p);
+    return el;
+  }
+
+  const makeStation = (lp) => {
+    const div = document.createElement('div');
+    div.className = 'laadpaal-item';
+
+    const header = document.createElement('div');
+    header.className = 'laadpaal-header';
+    header.innerHTML = `
+      <span class="laadpaal-afstand">${lp.afstand_m} m</span>
+      <span class="laadpaal-adres">${lp.straat ?? '—'}</span>
+      <span class="laadpaal-eigenaar">${lp.eigenaar ?? ''}</span>
+    `;
+    div.appendChild(header);
+
+    if (lp.connectoren && lp.connectoren.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'laadpaal-conn-list';
+      lp.connectoren.forEach((c) => {
+        const li = document.createElement('li');
+        const kw = c.vermogen_kw ? ` — ${c.vermogen_kw} kW` : '';
+        const vrijClass = c.beschikbaar > 0 ? 'conn-vrij' : 'conn-bezet';
+        li.innerHTML = `<span class="conn-type">${c.type}</span>${kw} <span class="${vrijClass}">${c.beschikbaar}/${c.totaal} vrij</span>`;
+        ul.appendChild(li);
+      });
+      div.appendChild(ul);
+    }
+
+    return div;
+  };
+
+  // Dichtstbijzijnde altijd zichtbaar
+  body.appendChild(makeStation(laadpalen[0]));
+
+  // Overige ingeklapt
+  const rest = laadpalen.slice(1);
+  if (rest.length) {
+    const details = document.createElement('details');
+    details.className = 'woz-details';
+    const summary = document.createElement('summary');
+    summary.textContent = `Overige laadpalen (${rest.length})`;
+    details.appendChild(summary);
+    rest.forEach((lp) => details.appendChild(makeStation(lp)));
+    body.appendChild(details);
   }
 
   return el;
 }
 
 function linksCard(addr, hp) {
-  const el = document.createElement('div');
-  el.className = 'info-card';
-
-  const h2 = document.createElement('h2');
-  h2.textContent = '🔗 Externe bronnen';
-  el.appendChild(h2);
+  const { el, body } = makeCardShell('🔗 Externe bronnen');
 
   const links = [
     { label: 'WOZ Waardeloket',        url: 'https://www.woz-waardeloket.nl/' },
@@ -569,9 +689,26 @@ function linksCard(addr, hp) {
     li.innerHTML = `<a href="${url}" target="_blank" rel="noopener noreferrer">↗ ${label}</a>`;
     ul.appendChild(li);
   });
-  el.appendChild(ul);
+  body.appendChild(ul);
   return el;
 }
+
+// ── Home ─────────────────────────────────────────────────────────────────────
+function goHome() {
+  searchInput.value = '';
+  hideSuggestions();
+  if (markerLayer)    { map.removeLayer(markerLayer);    markerLayer    = null; }
+  if (parcelLayer)    { map.removeLayer(parcelLayer);    parcelLayer    = null; }
+  if (laadpaalMarker) { map.removeLayer(laadpaalMarker); laadpaalMarker = null; }
+  map.setView(ZWOLLE, 13);
+  renderRecent();
+  showState('placeholder');
+}
+
+document.querySelector('.logo').addEventListener('click', goHome);
+
+// Laad recente adressen bij opstarten
+renderRecent();
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 function formatDate(dateStr) {

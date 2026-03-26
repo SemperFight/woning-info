@@ -1,13 +1,102 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from typing import Optional
+from collections import OrderedDict
+from contextlib import asynccontextmanager
+import asyncio
+import gzip
+import math
 import httpx
 import re
 import json
 import unicodedata
 from bs4 import BeautifulSoup
 
-app = FastAPI(title="Woning Info Zwolle")
+
+class _LRU:
+    """Eenvoudige in-memory LRU-cache."""
+    def __init__(self, maxsize: int = 3):
+        self._cache: OrderedDict = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key):
+        if key not in self._cache:
+            return None
+        self._cache.move_to_end(key)
+        return self._cache[key]
+
+    def set(self, key, value):
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        else:
+            if len(self._cache) >= self._maxsize:
+                self._cache.popitem(last=False)
+        self._cache[key] = value
+
+
+_cache_lookup    = _LRU()
+_cache_perceel   = _LRU()
+_cache_woz       = _LRU()
+_cache_monument  = _LRU()
+_cache_huispedia = _LRU()
+_cache_internet  = _LRU()
+_cache_laadpalen = _LRU()
+
+# ── NDW laadpalen (bulk download, heel Nederland) ────────────────────────────
+NDW_GEOJSON_URL = "https://opendata.ndw.nu/charging_point_locations.geojson.gz"
+_ndw_features: list = []
+
+_CONNECTOR_LABEL: dict = {
+    "IEC_62196_T2":       "Type 2",
+    "IEC_62196_T2_COMBO": "CCS",
+    "CHADEMO":            "CHAdeMO",
+    "TESLA_S":            "Tesla",
+    "IEC_62196_T1":       "Type 1",
+    "IEC_62196_T1_COMBO": "CCS (Type 1)",
+    "DOMESTIC_F":         "Schuko",
+}
+
+
+def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Rechte-lijnafstand in meters (WGS84)."""
+    R = 6_371_000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+async def _ndw_load() -> None:
+    global _ndw_features
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.get(NDW_GEOJSON_URL)
+        r.raise_for_status()
+    _ndw_features = json.loads(gzip.decompress(r.content)).get("features", [])
+
+
+async def _ndw_refresh_loop() -> None:
+    while True:
+        try:
+            await _ndw_load()
+        except Exception:
+            pass  # Bestaande data behouden bij mislukte refresh
+        await asyncio.sleep(12 * 3600)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_ndw_refresh_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="Woning Info Zwolle", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 PDOK_SUGGEST = "https://api.pdok.nl/bzk/locatieserver/search/v3_1/suggest"
@@ -28,6 +117,11 @@ async def root():
     return FileResponse("static/index.html")
 
 
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)
+
+
 @app.get("/api/suggest")
 async def suggest(q: str = Query(..., min_length=2)):
     params = [
@@ -45,9 +139,13 @@ async def suggest(q: str = Query(..., min_length=2)):
 
 
 @app.get("/api/lookup")
-async def lookup(id: str = Query(...)):
+async def lookup(adres_id: str = Query(..., alias="id")):
+    cached = _cache_lookup.get(adres_id)
+    if cached is not None:
+        return cached
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(PDOK_LOOKUP, params={"id": id, "fl": "*"})
+        r = await client.get(PDOK_LOOKUP, params={"id": adres_id, "fl": "*"})
         r.raise_for_status()
     docs = r.json().get("response", {}).get("docs", [])
     if not docs:
@@ -66,7 +164,7 @@ async def lookup(id: str = Query(...)):
         parts = centroide_rd[6:-1].split()
         rd_x, rd_y = float(parts[0]), float(parts[1])
 
-    return {
+    result = {
         "nummeraanduiding_id": doc.get("nummeraanduiding_id"),
         "verblijfsobject_id":  doc.get("adresseerbaarobject_id"),
         "weergavenaam":        doc.get("weergavenaam"),
@@ -83,12 +181,19 @@ async def lookup(id: str = Query(...)):
         "lat": lat,
         "lng": lng,
     }
+    _cache_lookup.set(adres_id, result)
+    return result
 
 
 @app.get("/api/perceel")
-async def get_perceel(gekoppeld_perceel: str = Query(None), rd_x: float = Query(None), rd_y: float = Query(None)):
+async def get_perceel(gekoppeld_perceel: Optional[str] = Query(None), rd_x: Optional[float] = Query(None), rd_y: Optional[float] = Query(None)):
     if not rd_x or not rd_y:
         return {"perceel": None}
+
+    cache_key = (gekoppeld_perceel, rd_x, rd_y)
+    cached = _cache_perceel.get(cache_key)
+    if cached is not None:
+        return cached
 
     # Haal percelen op via bbox (CQL attribuutfilter wordt niet ondersteund door deze WFS)
     d = 30
@@ -137,7 +242,7 @@ async def get_perceel(gekoppeld_perceel: str = Query(None), rd_x: float = Query(
         best = min(features, key=lambda f: f.get("properties", {}).get("kadastraleGrootteWaarde") or 9999999)
 
     p = best.get("properties", {})
-    return {
+    result = {
         "perceel": {
             "kadastralegemeente": p.get("kadastraleGemeenteWaarde"),
             "sectie":             p.get("sectie"),
@@ -146,12 +251,18 @@ async def get_perceel(gekoppeld_perceel: str = Query(None), rd_x: float = Query(
             "geometry":           best.get("geometry"),
         }
     }
+    _cache_perceel.set(cache_key, result)
+    return result
 
 
 @app.get("/api/woz")
-async def get_woz(nummeraanduiding_id: str = Query(None)):
+async def get_woz(nummeraanduiding_id: Optional[str] = Query(None)):
     if not nummeraanduiding_id:
         return {"woz": None, "bron": None}
+
+    cached = _cache_woz.get(nummeraanduiding_id)
+    if cached is not None:
+        return cached
 
     # ID altijd zero-padden naar 16 cijfers (zoals de WOZ Waardeloket app dat doet)
     nid = nummeraanduiding_id.zfill(16)
@@ -160,7 +271,9 @@ async def get_woz(nummeraanduiding_id: str = Query(None)):
         try:
             r = await client.get(f"{WOZ_API}/{nid}", headers=WOZ_HEADERS)
             if r.status_code == 200:
-                return {"woz": r.json(), "bron": "kadaster-wozwaardeloket"}
+                result = {"woz": r.json(), "bron": "kadaster-wozwaardeloket"}
+                _cache_woz.set(nummeraanduiding_id, result)
+                return result
         except Exception:
             pass
 
@@ -171,6 +284,11 @@ ERFGOED_URL = "https://gisservices.zwolle.nl/arcgis/rest/services/Erfgoed/MapSer
 
 @app.get("/api/monument")
 async def get_monument(rd_x: float, rd_y: float):
+    cache_key = (rd_x, rd_y)
+    cached = _cache_monument.get(cache_key)
+    if cached is not None:
+        return cached
+
     query_params = {
         "f":            "json",
         "geometry":     f"{rd_x},{rd_y}",
@@ -201,7 +319,58 @@ async def get_monument(rd_x: float, rd_y: float):
                     })
             except Exception:
                 pass
-    return {"monumenten": monumenten}
+    result = {"monumenten": monumenten}
+    _cache_monument.set(cache_key, result)
+    return result
+
+
+@app.get("/api/laadpalen")
+async def get_laadpalen(lat: float, lng: float, straal: int = 500):
+    """Geef openbare laadpalen binnen straal (meters) op basis van NDW open data."""
+    cache_key = (round(lat, 5), round(lng, 5), straal)
+    cached = _cache_laadpalen.get(cache_key)
+    if cached is not None:
+        return cached
+
+    stations = []
+    for feat in _ndw_features:
+        coords = (feat.get("geometry") or {}).get("coordinates")
+        if not coords:
+            continue
+        f_lng, f_lat = coords[0], coords[1]
+        afstand = round(_haversine(lat, lng, f_lat, f_lng))
+        if afstand > straal:
+            continue
+
+        props = feat.get("properties", {})
+        connectoren = []
+        for av in props.get("availabilities", []):
+            ct = av.get("connector_type", "")
+            power_w = av.get("power_max") or 0
+            kw = round(power_w / 1000, 1) if power_w else None
+            connectoren.append({
+                "type":        _CONNECTOR_LABEL.get(ct, ct),
+                "vermogen_kw": kw,
+                "totaal":      av.get("total", 1),
+                "beschikbaar": av.get("available", 0),
+            })
+
+        stations.append({
+            "straat":      props.get("address"),
+            "eigenaar":    props.get("operator_name"),
+            "open":        props.get("open"),
+            "afstand_m":   afstand,
+            "lat":         f_lat,
+            "lng":         f_lng,
+            "connectoren": connectoren,
+        })
+
+    stations.sort(key=lambda s: s["afstand_m"])
+    dichtsbijzijnde = stations[0]["afstand_m"] if stations else None
+
+    result = {"laadpalen": stations, "dichtsbijzijnde_m": dichtsbijzijnde}
+    _cache_laadpalen.set(cache_key, result)
+    return result
 
 
 def _slug(text: str) -> str:
@@ -216,6 +385,11 @@ def _slug(text: str) -> str:
 @app.get("/api/huispedia")
 async def get_huispedia(straat: str, huisnummer: str, woonplaats: str, postcode: str):
     """Scrape Huispedia voor schatting, laatste verkoop en energielabel."""
+    cache_key = (straat, huisnummer, woonplaats, postcode)
+    cached = _cache_huispedia.get(cache_key)
+    if cached is not None:
+        return cached
+
     huisnr_clean = re.sub(r"\s+", "-", str(huisnummer).strip().lower())
     postcode_slug = postcode.replace(" ", "").lower()
     url = f"https://www.huispedia.nl/{_slug(woonplaats)}/{postcode_slug}/{_slug(straat)}/{huisnr_clean}"
@@ -299,7 +473,9 @@ async def get_huispedia(straat: str, huisnummer: str, woonplaats: str, postcode:
     if jaar_match:
         result["bouwjaar_hp"] = jaar_match.group(1)
 
-    return {"data": result if result else None, "url": url, "fout": None}
+    response = {"data": result if result else None, "url": url, "fout": None}
+    _cache_huispedia.set(cache_key, response)
+    return response
 
 
 MOBIEL_GQL = "https://graph.mobiel.nl/api"
@@ -321,7 +497,7 @@ query($postcode: String!, $number: Int!) {
 }
 """
 
-def _ziggo_max_speed(tcp_lines: list) -> int | None:
+def _ziggo_max_speed(tcp_lines: list) -> Optional[int]:
     service_types = []
     for tcp in tcp_lines:
         for svc in tcp.get("TcpServiceLines", []):
@@ -339,6 +515,11 @@ def _ziggo_max_speed(tcp_lines: list) -> int | None:
 @app.get("/api/internet")
 async def get_internet(postcode: str, huisnummer: str):
     """Haal internetbeschikbaarheid op via de Independer/Mobiel.nl GraphQL API."""
+    cache_key = (postcode, huisnummer)
+    cached = _cache_internet.get(cache_key)
+    if cached is not None:
+        return cached
+
     zip_clean = postcode.replace(" ", "").upper()
     nr_str    = re.sub(r"[^\d]", "", str(huisnummer))
     if not nr_str:
@@ -349,14 +530,12 @@ async def get_internet(postcode: str, huisnummer: str):
     url = (f"https://www.providers.nl/internet/vergelijken"
            f"?zip={postcode.replace(' ', '').lower()}&nr={nr}&scroll=true&product_type=ipt")
 
-    import asyncio as _asyncio
-
     variables = {"postcode": zip_clean, "number": nr}
     offers = []
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         # Poll totdat alle offers klaar zijn (max 10 pogingen, 1s tussenpoos)
-        for attempt in range(10):
+        for _ in range(10):
             try:
                 r = await client.post(
                     MOBIEL_GQL,
@@ -376,7 +555,7 @@ async def get_internet(postcode: str, huisnummer: str):
             if not any(o.get("state") == "performing" for o in offers):
                 break  # Alle offers zijn klaar
 
-            await _asyncio.sleep(1.0)
+            await asyncio.sleep(1.0)
 
     nets: dict[str, dict] = {
         "glasvezel": {"available": False, "maxDown": None},
@@ -492,4 +671,6 @@ async def get_internet(postcode: str, huisnummer: str):
         if info["maxDown"] is not None:
             result[f"{net}_mbps"] = info["maxDown"]
 
-    return {"data": result, "url": url, "fout": None}
+    response = {"data": result, "url": url, "fout": None}
+    _cache_internet.set(cache_key, response)
+    return response
