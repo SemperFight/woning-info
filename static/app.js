@@ -25,9 +25,72 @@ document.getElementById('kk-toggle').addEventListener('change', (e) => {
   else map.removeLayer(kkLayer);
 });
 
-let markerLayer    = null;
-let parcelLayer    = null;
-let laadpaalLayer = null;
+let markerLayer         = null;
+let parcelLayer         = null;
+let laadpaalLayer       = null;
+let kadastraleGrenzenLayer = null;
+let grenzenEnabled      = false;
+
+// ── Kadastrale grenzen (WFS vectorlaag) ─────────────────────────────────────
+const PDOK_KK_WFS_URL = 'https://service.pdok.nl/kadaster/kadastralekaart/wfs/v5_0';
+const GRENZEN_MIN_ZOOM = 15;
+
+document.getElementById('grenzen-toggle').addEventListener('change', (e) => {
+  grenzenEnabled = e.target.checked;
+  if (grenzenEnabled) {
+    updateKadastraleGrenzen();
+  } else {
+    if (kadastraleGrenzenLayer) { map.removeLayer(kadastraleGrenzenLayer); kadastraleGrenzenLayer = null; }
+    document.getElementById('grenzen-zoom-hint').classList.add('hidden');
+  }
+});
+
+map.on('moveend', () => {
+  if (grenzenEnabled) updateKadastraleGrenzen();
+});
+
+async function updateKadastraleGrenzen() {
+  const hint = document.getElementById('grenzen-zoom-hint');
+  if (map.getZoom() < GRENZEN_MIN_ZOOM) {
+    if (kadastraleGrenzenLayer) { map.removeLayer(kadastraleGrenzenLayer); kadastraleGrenzenLayer = null; }
+    hint.classList.remove('hidden');
+    return;
+  }
+  hint.classList.add('hidden');
+
+  const b = map.getBounds();
+  // WFS 2.0 + EPSG:4326 verwacht bbox in lat/lon volgorde (south,west,north,east)
+  const bbox = `${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()},EPSG:4326`;
+
+  const params = new URLSearchParams({
+    service:      'WFS',
+    version:      '2.0.0',
+    request:      'GetFeature',
+    typeNames:    'kadastralekaart:Perceel',
+    outputFormat: 'application/json',
+    srsName:      'EPSG:4326',
+    bbox,
+    count:        '500',
+  });
+
+  try {
+    const r = await fetch(`${PDOK_KK_WFS_URL}?${params}`);
+    if (!r.ok) return;
+    const geojson = await r.json();
+
+    if (kadastraleGrenzenLayer) map.removeLayer(kadastraleGrenzenLayer);
+    kadastraleGrenzenLayer = L.geoJSON(geojson, {
+      style: {
+        color:       '#c0392b',
+        weight:      1.5,
+        opacity:     0.9,
+        fill:        false,
+      },
+    }).addTo(map);
+  } catch {
+    // Stil falen
+  }
+}
 
 const laadpaalIcon = L.divIcon({
   className: '',
@@ -595,6 +658,31 @@ function internetCard(internet) {
   return el;
 }
 
+// ── Laadpaaloperator tarieven (indicatief, pay-per-charge zonder laadpas) ────
+const OPERATOR_TARIEVEN = [
+  { match: 'allego',         label: 'Allego',            ac: 0.47, dc: 0.69, url: 'https://allego.eu/nl-nl/particulier/laadtarieven/' },
+  { match: 'vattenfall',     label: 'Vattenfall InCharge',ac: 0.49, dc: null, url: 'https://www.vattenfall.nl/energie-producten/elektrisch-rijden/laden/' },
+  { match: 'incharge',       label: 'Vattenfall InCharge',ac: 0.49, dc: null, url: 'https://www.vattenfall.nl/energie-producten/elektrisch-rijden/laden/' },
+  { match: 'shell',          label: 'Shell Recharge',    ac: 0.47, dc: 0.76, url: 'https://shellrecharge.com/nl-nl/solutions/drivers/tarieven' },
+  { match: 'fastned',        label: 'Fastned',           ac: null, dc: 0.89, url: 'https://fastned.nl/nl/laden/tarief' },
+  { match: 'ionity',         label: 'IONITY',            ac: null, dc: 0.79, url: 'https://ionity.eu/nl/charge/pricing' },
+  { match: 'eneco',          label: 'Eneco',             ac: 0.44, dc: null, url: 'https://www.eneco.nl/elektrisch-rijden/laadpaal/' },
+  { match: 'essent',         label: 'Essent',            ac: 0.45, dc: null, url: 'https://www.essent.nl/content/particulier/elektrisch-rijden' },
+  { match: 'tesla',          label: 'Tesla Supercharger', ac: null, dc: 0.44, url: 'https://www.tesla.com/nl_NL/support/supercharging' },
+  { match: 'evbox',          label: 'EVBox',             ac: null, dc: null, url: 'https://evbox.com/nl-nl/tarieven' },
+  { match: 'chargepoint',    label: 'ChargePoint',       ac: null, dc: null, url: 'https://www.chargepoint.com/nl-nl' },
+  { match: 'blue corner',    label: 'Blue Corner',       ac: 0.45, dc: null, url: 'https://www.bluecorner.nl/nl/tarieven' },
+  { match: 'nuon',           label: 'Vattenfall InCharge',ac: 0.49, dc: null, url: 'https://www.vattenfall.nl/energie-producten/elektrisch-rijden/laden/' },
+  { match: 'greenstadion',   label: 'Greenstadion',      ac: 0.40, dc: null, url: 'https://www.greenstadion.nl' },
+  { match: 'last mile',      label: 'Last Mile Solutions',ac: 0.45, dc: null, url: 'https://www.lastmilesolutions.com' },
+];
+
+function operatorTarief(naam) {
+  if (!naam) return null;
+  const lower = naam.toLowerCase();
+  return OPERATOR_TARIEVEN.find((o) => lower.includes(o.match)) ?? null;
+}
+
 // ── Laadpalen card ───────────────────────────────────────────────────────────
 function laadpalenCard(data) {
   const { el, body } = makeCardShell('⚡ Laadpalen in de buurt (500 m)');
@@ -641,6 +729,33 @@ function laadpalenCard(data) {
         ul.appendChild(li);
       });
       div.appendChild(ul);
+    }
+
+    // Tariefinformatie
+    const tarief = operatorTarief(lp.eigenaar);
+    if (tarief) {
+      const tarifDiv = document.createElement('div');
+      tarifDiv.className = 'laadpaal-tarief';
+
+      const prijsDelen = [];
+      if (tarief.ac != null) prijsDelen.push(`AC €${tarief.ac.toFixed(2)}/kWh`);
+      if (tarief.dc != null) prijsDelen.push(`DC €${tarief.dc.toFixed(2)}/kWh`);
+
+      const prijsTekst = prijsDelen.length
+        ? `<span class="tarief-prijs">${prijsDelen.join(' · ')}</span>`
+        : '<span class="tarief-onbekend">Prijs onbekend</span>';
+
+      tarifDiv.innerHTML = `${prijsTekst} <span class="tarief-hint">(indicatief, pay-per-charge)</span>`;
+
+      const link = document.createElement('a');
+      link.href = tarief.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.className = 'tarief-link';
+      link.textContent = '↗ Actuele tarieven';
+      tarifDiv.appendChild(link);
+
+      div.appendChild(tarifDiv);
     }
 
     return div;
@@ -701,9 +816,10 @@ function linksCard(addr, hp) {
 function goHome() {
   searchInput.value = '';
   hideSuggestions();
-  if (markerLayer)    { map.removeLayer(markerLayer);    markerLayer    = null; }
-  if (parcelLayer)    { map.removeLayer(parcelLayer);    parcelLayer    = null; }
-  if (laadpaalLayer)  { map.removeLayer(laadpaalLayer);  laadpaalLayer  = null; }
+  if (markerLayer)            { map.removeLayer(markerLayer);            markerLayer            = null; }
+  if (parcelLayer)            { map.removeLayer(parcelLayer);            parcelLayer            = null; }
+  if (laadpaalLayer)          { map.removeLayer(laadpaalLayer);          laadpaalLayer          = null; }
+  if (kadastraleGrenzenLayer) { map.removeLayer(kadastraleGrenzenLayer); kadastraleGrenzenLayer = null; }
   map.setView(ZWOLLE, 13);
   renderRecent();
   showState('placeholder');

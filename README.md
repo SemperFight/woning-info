@@ -11,7 +11,8 @@ Lokale webapplicatie die eigendoms- en kadastrale informatie ophaalt voor adress
 - WOZ-waarden (meest recente zichtbaar, oudere waarden uitklapbaar)
 - Monumentale status (Rijks- en gemeentelijke monumenten)
 - Internetbeschikbaarheid (glasvezel, kabel, ADSL/VDSL) met maximale downloadsnelheid
-- Openbare laadpalen binnen 500 m (connector type, vermogen, beschikbaarheid) met kaartmarker
+- Openbare laadpalen binnen 500 m (connector type, vermogen, beschikbaarheid) met kaartmarker en indicatieve kWh-tarieven per operator
+- Kadastrale perceelgrenzen als vectorlaag (via PDOK WFS, instelbaar via toggle)
 - Link naar Huispedia woningpagina
 - Externe links naar relevante bronnen
 
@@ -109,9 +110,23 @@ Bij het opstarten downloadt de server automatisch alle openbare laadpalen in Ned
 - Geen registratie of API-key nodig
 - Volledige landelijke dekking
 - Gegevens per laadpaal: adres, operator, connector type (Type 2, CCS, CHAdeMO…), vermogen (kW) en beschikbaarheid
-- De dichtstbijzijnde laadpaal binnen 500 m wordt als ⚡-marker op de kaart getoond
+- De drie dichtstbijzijnde laadpalen binnen 500 m worden als ⚡-markers op de kaart getoond
+- Per laadpaal worden **indicatieve kWh-tarieven** getoond (pay-per-charge, zonder laadpas) voor bekende operators zoals Allego, Shell Recharge, Fastned, Vattenfall InCharge, IONITY, Eneco en meer
+- Een directe link naar de tariefpagina van de operator biedt altijd toegang tot de actuele prijzen
+
+> **Let op:** de getoonde tarieven zijn indicatief en gebaseerd op openbaar gepubliceerde pay-per-charge prijzen. Werkelijke kosten kunnen afwijken afhankelijk van laadpas of abonnement.
 
 Bij de eerste opstart kan het enkele seconden duren voordat de laadpalendata beschikbaar is.
+
+---
+
+## Kadastrale grenzen
+
+Via de toggle **"Kadastrale grenzen"** op de kaart kunnen alle perceelgrenzen als vectorlaag worden ingeladen, rechtstreeks uit de PDOK Kadastrale Kaart WFS. De grenzen worden automatisch vernieuwd bij het bewegen of inzoomen van de kaart.
+
+- Beschikbaar vanaf **zoomniveau 15** (straat-/pandniveau)
+- Weergegeven als rode lijnen, onafhankelijk van de kadastrale WMS-overlay
+- Geen extra installatie of API-key nodig
 
 ---
 
