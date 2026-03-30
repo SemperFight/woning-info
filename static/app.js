@@ -27,7 +27,7 @@ document.getElementById('kk-toggle').addEventListener('change', (e) => {
 
 let markerLayer    = null;
 let parcelLayer    = null;
-let laadpaalMarker = null;
+let laadpaalLayer = null;
 
 const laadpaalIcon = L.divIcon({
   className: '',
@@ -180,16 +180,20 @@ async function selectAddress(item) {
         : Promise.resolve({ laadpalen: [], dichtsbijzijnde_m: null }),
     ]);
 
-    // Map: laadpaal marker (dichtstbijzijnde)
-    if (laadpaalMarker) { map.removeLayer(laadpaalMarker); laadpaalMarker = null; }
-    const nearest = laadpalenData?.laadpalen?.[0];
-    if (nearest?.lat && nearest?.lng) {
-      const popupLines = (nearest.connectoren || [])
-        .map((c) => `${c.type}${c.vermogen_kw ? ` ${c.vermogen_kw} kW` : ''} — ${c.beschikbaar}/${c.totaal} vrij`)
-        .join('<br>');
-      laadpaalMarker = L.marker([nearest.lat, nearest.lng], { icon: laadpaalIcon })
-        .addTo(map)
-        .bindPopup(`<strong>${nearest.straat ?? 'Laadpaal'}</strong><br>${nearest.eigenaar ?? ''}<br>${popupLines}`);
+    // Map: laadpaal markers (drie dichtstbijzijnde)
+    if (laadpaalLayer) { map.removeLayer(laadpaalLayer); laadpaalLayer = null; }
+    const topDrie = (laadpalenData?.laadpalen ?? []).slice(0, 3).filter((lp) => lp.lat && lp.lng);
+    if (topDrie.length) {
+      laadpaalLayer = L.layerGroup();
+      topDrie.forEach((lp) => {
+        const popupLines = (lp.connectoren || [])
+          .map((c) => `${c.type}${c.vermogen_kw ? ` ${c.vermogen_kw} kW` : ''} — ${c.beschikbaar}/${c.totaal} vrij`)
+          .join('<br>');
+        L.marker([lp.lat, lp.lng], { icon: laadpaalIcon })
+          .bindPopup(`<strong>${lp.straat ?? 'Laadpaal'}</strong><br>${lp.eigenaar ?? ''}<br>${popupLines}`)
+          .addTo(laadpaalLayer);
+      });
+      laadpaalLayer.addTo(map);
     }
 
     // Map: parcel polygon
@@ -699,7 +703,7 @@ function goHome() {
   hideSuggestions();
   if (markerLayer)    { map.removeLayer(markerLayer);    markerLayer    = null; }
   if (parcelLayer)    { map.removeLayer(parcelLayer);    parcelLayer    = null; }
-  if (laadpaalMarker) { map.removeLayer(laadpaalMarker); laadpaalMarker = null; }
+  if (laadpaalLayer)  { map.removeLayer(laadpaalLayer);  laadpaalLayer  = null; }
   map.setView(ZWOLLE, 13);
   renderRecent();
   showState('placeholder');
