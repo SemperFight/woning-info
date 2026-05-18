@@ -35,13 +35,21 @@ class _LRU:
         self._cache[key] = value
 
 
-_cache_lookup    = _LRU()
-_cache_perceel   = _LRU()
-_cache_woz       = _LRU()
-_cache_monument  = _LRU()
-_cache_huispedia = _LRU()
-_cache_internet  = _LRU()
-_cache_laadpalen = _LRU()
+_cache_lookup       = _LRU()
+_cache_perceel      = _LRU()
+_cache_woz          = _LRU()
+_cache_monument     = _LRU()
+_cache_huispedia    = _LRU()
+_cache_internet     = _LRU()
+_cache_laadpalen    = _LRU()
+_cache_energielabel = _LRU()
+
+EP_ONLINE_SEARCH = "https://ep-online.nl/Energylabel/Search"
+_EP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+    "Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "nl-NL,nl;q=0.9",
+}
 
 # ── NDW laadpalen (bulk download, heel Nederland) ────────────────────────────
 NDW_GEOJSON_URL = "https://opendata.ndw.nu/charging_point_locations.geojson.gz"
@@ -321,6 +329,84 @@ async def get_monument(rd_x: float, rd_y: float):
                 pass
     result = {"monumenten": monumenten}
     _cache_monument.set(cache_key, result)
+    return result
+
+
+@app.get("/api/energielabel")
+async def get_energielabel(verblijfsobject_id: str = Query(...)):
+    """Haal energielabel op via ep-online.nl (scraping, geen API-sleutel nodig)."""
+    cached = _cache_energielabel.get(verblijfsobject_id)
+    if cached is not None:
+        return cached
+
+    bag_id = verblijfsobject_id.zfill(16)
+
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        # Stap 1: GET voor CSRF-token en sessiecookie
+        try:
+            r_get = await client.get(EP_ONLINE_SEARCH, headers=_EP_HEADERS)
+            r_get.raise_for_status()
+        except Exception as e:
+            return {"label": None, "fout": str(e)}
+
+        soup_get = BeautifulSoup(r_get.text, "html.parser")
+        token_input = soup_get.find("input", {"name": "__RequestVerificationToken"})
+        if not token_input:
+            return {"label": None, "fout": "geen CSRF-token"}
+        token = token_input["value"]
+
+        # Stap 2: POST met BAG verblijfsobject-ID als zoekopdracht
+        post_headers = {
+            **_EP_HEADERS,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer":      EP_ONLINE_SEARCH,
+        }
+        try:
+            r_post = await client.post(
+                EP_ONLINE_SEARCH,
+                data={"SearchValue": bag_id, "__RequestVerificationToken": token},
+                headers=post_headers,
+            )
+            r_post.raise_for_status()
+        except Exception as e:
+            return {"label": None, "fout": str(e)}
+
+    soup = BeautifulSoup(r_post.text, "html.parser")
+
+    # Meest recente resultaat: hoogste sort-value-registrationdate
+    items = soup.select(".pagination-item")
+    if not items:
+        result = {"label": None, "fout": None}
+        _cache_energielabel.set(verblijfsobject_id, result)
+        return result
+
+    def _reg_date(item):
+        span = item.select_one(".sort-value-registrationdate")
+        return span.get_text(strip=True) if span else ""
+
+    best = max(items, key=_reg_date)
+
+    # Labelklasse: tekst in de div met bg-label-class-X
+    label_div = best.find(class_=re.compile(r"bg-label-class-"))
+    energieklasse = None
+    if label_div:
+        span = label_div.find("span")
+        energieklasse = span.get_text(strip=True) if span else None
+
+    # Registratiedatum: YYYYMMDD → YYYY-MM-DD
+    reg_raw = _reg_date(best)
+    registratiedatum = (
+        f"{reg_raw[:4]}-{reg_raw[4:6]}-{reg_raw[6:]}" if len(reg_raw) == 8 else None
+    )
+
+    result = {
+        "label": {
+            "energieklasse":    energieklasse,
+            "registratiedatum": registratiedatum,
+        } if energieklasse else None,
+        "fout": None,
+    }
+    _cache_energielabel.set(verblijfsobject_id, result)
     return result
 
 

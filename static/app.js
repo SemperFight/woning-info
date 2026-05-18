@@ -212,7 +212,7 @@ async function selectAddress(item) {
     const percelParams = new URLSearchParams({ rd_x: addr.rd_x, rd_y: addr.rd_y });
     if (gpValue) percelParams.set('gekoppeld_perceel', gpValue);
 
-    const [percelData, wozData, hpData, monData, internetData, laadpalenData] = await Promise.all([
+    const [percelData, wozData, hpData, monData, internetData, laadpalenData, energielabelData] = await Promise.all([
       fetch(`/api/perceel?${percelParams}`).then((r) => r.json()).catch(() => ({ perceel: null })),
       fetch(`/api/woz?${new URLSearchParams({
           ...(addr.nummeraanduiding_id && { nummeraanduiding_id: addr.nummeraanduiding_id }),
@@ -241,6 +241,11 @@ async function selectAddress(item) {
             .then((r) => r.json())
             .catch(() => ({ laadpalen: [], dichtsbijzijnde_m: null }))
         : Promise.resolve({ laadpalen: [], dichtsbijzijnde_m: null }),
+      addr.verblijfsobject_id
+        ? fetch(`/api/energielabel?verblijfsobject_id=${encodeURIComponent(addr.verblijfsobject_id)}`)
+            .then((r) => r.json())
+            .catch(() => ({ label: null, fout: 'netwerkfout' }))
+        : Promise.resolve({ label: null, fout: null }),
     ]);
 
     // Map: laadpaal markers (drie dichtstbijzijnde)
@@ -272,7 +277,7 @@ async function selectAddress(item) {
       }).addTo(map);
     }
 
-    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? [], internetData, laadpalenData);
+    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? [], internetData, laadpalenData, energielabelData);
   } catch (err) {
     showError('Er is een fout opgetreden. Probeer het opnieuw.');
     console.error(err);
@@ -295,7 +300,7 @@ function showError(msg) {
 }
 
 // ── Info panel renderer ─────────────────────────────────────────────────────
-function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen) {
+function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen, energielabel) {
   const content = document.getElementById('info-content');
   content.innerHTML = '';
 
@@ -305,7 +310,7 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen
       ['Adres',      addr.weergavenaam],
       ['Postcode',   addr.postcode],
       ['Woonplaats', addr.woonplaats],
-    ])
+    ], true)
   );
 
   // BAG gebouwgegevens
@@ -321,6 +326,9 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen
       ['BAG object-ID',    addr.verblijfsobject_id],
     ])
   );
+
+  // Energielabel
+  content.appendChild(energielabelCard(energielabel));
 
   // Kadastraal perceel
   if (perceel) {
@@ -368,9 +376,10 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen
 }
 
 // ── Card builder ────────────────────────────────────────────────────────────
-function makeCardShell(title) {
+function makeCardShell(title, open = false) {
   const el = document.createElement('div');
   el.className = 'info-card';
+  if (!open) el.classList.add('collapsed');
 
   const h2 = document.createElement('h2');
   const toggle = document.createElement('span');
@@ -388,8 +397,8 @@ function makeCardShell(title) {
   return { el, body };
 }
 
-function card(title, rows) {
-  const { el, body } = makeCardShell(title);
+function card(title, rows, open = false) {
+  const { el, body } = makeCardShell(title, open);
 
   const table = document.createElement('table');
   table.className = 'data-table';
@@ -517,6 +526,61 @@ function monumentCard(monumenten) {
     block.appendChild(table);
     body.appendChild(block);
   });
+
+  return el;
+}
+
+// ── Energielabel card ────────────────────────────────────────────────────────
+const LABEL_KLEUR = {
+  'A++++': '#1a7f37', 'A+++': '#1a7f37', 'A++': '#1a7f37', 'A+': '#2ea44f',
+  A: '#3fb950', B: '#7ec867', C: '#d4a017', D: '#e3b341',
+  E: '#e06c00', F: '#d04a02', G: '#b22222',
+};
+
+function energielabelCard(data) {
+  const { el, body } = makeCardShell('🏷️ Energielabel');
+
+  if (data?.fout) {
+    const p = document.createElement('p');
+    p.className = 'no-data';
+    p.textContent = `Energielabel niet opgehaald (${data.fout}).`;
+    body.appendChild(p);
+    return el;
+  }
+
+  if (!data.label) {
+    const p = document.createElement('p');
+    p.className = 'no-data';
+    p.textContent = 'Geen geregistreerd energielabel gevonden.';
+    body.appendChild(p);
+    return el;
+  }
+
+  const { energieklasse, energieindex, registratiedatum, geldig_tot, labeltype } = data.label;
+
+  if (energieklasse) {
+    const badge = document.createElement('span');
+    badge.className = 'energielabel-badge';
+    badge.textContent = energieklasse;
+    badge.style.backgroundColor = LABEL_KLEUR[energieklasse] ?? '#555';
+    body.appendChild(badge);
+  }
+
+  const table = document.createElement('table');
+  table.className = 'data-table';
+  [
+    ['Energieklasse',    energieklasse],
+    ['Energieindex',     energieindex],
+    ['Type label',       labeltype],
+    ['Registratiedatum', registratiedatum ? formatDate(registratiedatum) : null],
+    ['Geldig tot',       geldig_tot       ? formatDate(geldig_tot)       : null],
+  ].forEach(([label, value]) => {
+    if (!value) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="lbl">${label}</td><td class="val">${value}</td>`;
+    table.appendChild(tr);
+  });
+  body.appendChild(table);
 
   return el;
 }
