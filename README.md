@@ -13,10 +13,11 @@ Lokale webapplicatie die eigendoms- en kadastrale informatie ophaalt voor adress
 - Internetbeschikbaarheid (glasvezel, kabel, ADSL/VDSL) met maximale downloadsnelheid
 - Openbare laadpalen binnen 500 m (connector type, vermogen, beschikbaarheid) met kaartmarker en indicatieve kWh-tarieven per operator
 - Kadastrale perceelgrenzen als vectorlaag (via PDOK WFS, instelbaar via toggle)
+- **Energielabel** (klasse A t/m G, registratiedatum) via ep-online.nl — geen API-sleutel nodig
 - Link naar Huispedia woningpagina
 - Externe links naar relevante bronnen
 
-Alle informatiekaarten zijn **inklapbaar** via de titel. Het logo linksboven werkt als **home-knop** en brengt je terug naar het startscherm.
+Alle informatiekaarten zijn **inklapbaar** via de titel en starten **dichtgeklapt** bij het laden van een adres (alleen de Adreskaart blijft open). Het logo linksboven werkt als **home-knop** en brengt je terug naar het startscherm.
 
 ---
 
