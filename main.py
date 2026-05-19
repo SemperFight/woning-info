@@ -279,13 +279,14 @@ async def get_woz(nummeraanduiding_id: Optional[str] = Query(None)):
         try:
             r = await client.get(f"{WOZ_API}/{nid}", headers=WOZ_HEADERS)
             if r.status_code == 200:
-                result = {"woz": r.json(), "bron": "kadaster-wozwaardeloket"}
+                result = {"woz": r.json(), "bron": "kadaster-wozwaardeloket", "fout": None}
                 _cache_woz.set(nummeraanduiding_id, result)
                 return result
-        except Exception:
-            pass
+            return {"woz": None, "bron": None, "fout": f"HTTP {r.status_code}"}
+        except Exception as e:
+            return {"woz": None, "bron": None, "fout": str(e)}
 
-    return {"woz": None, "bron": None}
+    return {"woz": None, "bron": None, "fout": None}
 
 
 ERFGOED_URL = "https://gisservices.zwolle.nl/arcgis/rest/services/Erfgoed/MapServer"

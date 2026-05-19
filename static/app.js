@@ -353,7 +353,7 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen
   }
 
   // WOZ waarden
-  content.appendChild(wozCard(woz));
+  content.appendChild(wozCard(woz, wozData.fout));
 
   // Monumentale status
   content.appendChild(monumentCard(monumenten));
@@ -415,13 +415,15 @@ function card(title, rows, open = false) {
 }
 
 // ── WOZ card ────────────────────────────────────────────────────────────────
-function wozCard(woz) {
+function wozCard(woz, fout) {
   const { el, body } = makeCardShell('💰 WOZ-waarden');
 
   if (!woz) {
     const p = document.createElement('p');
     p.className   = 'no-data';
-    p.textContent = 'WOZ-waarden niet beschikbaar via open data.';
+    p.textContent = fout
+      ? 'WOZ-waarden tijdelijk niet beschikbaar (storing bij Kadaster).'
+      : 'WOZ-waarden niet beschikbaar via open data.';
     body.appendChild(p);
     return el;
   }
