@@ -277,7 +277,7 @@ async function selectAddress(item) {
       }).addTo(map);
     }
 
-    renderInfoPanel(addr, percelData.perceel, wozData.woz, hpData, monData.monumenten ?? [], internetData, laadpalenData, energielabelData);
+    renderInfoPanel(addr, percelData.perceel, wozData.woz, wozData.fout, hpData, monData.monumenten ?? [], internetData, laadpalenData, energielabelData);
   } catch (err) {
     showError('Er is een fout opgetreden. Probeer het opnieuw.');
     console.error(err);
@@ -300,7 +300,7 @@ function showError(msg) {
 }
 
 // ── Info panel renderer ─────────────────────────────────────────────────────
-function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen, energielabel) {
+function renderInfoPanel(addr, perceel, woz, wozFout, hp, monumenten, internet, laadpalen, energielabel) {
   const content = document.getElementById('info-content');
   content.innerHTML = '';
 
@@ -353,7 +353,7 @@ function renderInfoPanel(addr, perceel, woz, hp, monumenten, internet, laadpalen
   }
 
   // WOZ waarden
-  content.appendChild(wozCard(woz, wozData.fout));
+  content.appendChild(wozCard(woz, wozFout));
 
   // Monumentale status
   content.appendChild(monumentCard(monumenten));
